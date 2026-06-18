@@ -26,7 +26,7 @@ jobs:
             archive-suffix: macos-arm64
             binary: gnirehtet
           - os: windows-latest
-            rust-target: x86_64-pc-windows-gnu
+            rust-target: x86_64-pc-windows-msvc
             archive-suffix: win64
             binary: gnirehtet.exe
           - os: windows-latest
@@ -59,21 +59,10 @@ jobs:
         if: matrix.target.rust-target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Install cross-linker (Windows)
-        if: matrix.target.rust-target == 'x86_64-pc-windows-gnu'
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64
-
       - name: Build binary
-        run: |
-          case "${{ matrix.target.rust-target }}" in
-            aarch64-unknown-linux-gnu)
-              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-              ;;
-            x86_64-pc-windows-gnu)
-              export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
-              ;;
-          esac
-          cargo build --release --target ${{ matrix.target.rust-target }} --manifest-path relay-rust/Cargo.toml
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target ${{ matrix.target.rust-target }} --manifest-path relay-rust/Cargo.toml
 
       - name: Download ADB
         shell: bash
