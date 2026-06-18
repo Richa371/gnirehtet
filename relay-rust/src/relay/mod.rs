@@ -24,22 +24,24 @@ mod close_listener;
 mod connection;
 mod datagram;
 mod datagram_buffer;
+mod dns_cache;
+mod ip_header;
+mod ip_packet;
+mod ip_packet_buffer;
 #[macro_use]
 mod interrupt;
 mod ipv4_header;
 mod ipv4_packet;
-mod ipv4_packet_buffer;
+mod ipv6_header;
 mod net;
 mod packet_source;
 mod packetizer;
 #[allow(clippy::module_inception)] // relay.rs is in relay/
 mod relay;
 mod router;
-mod selector;
 mod stream_buffer;
-mod tcp_connection;
+pub mod tcp_connection;
 mod tcp_header;
 mod transport_header;
-mod tunnel_server;
 mod udp_connection;
 mod udp_header;

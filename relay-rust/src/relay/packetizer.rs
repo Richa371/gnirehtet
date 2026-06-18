@@ -17,7 +17,8 @@
 use std::io;
 
 use super::datagram::{DatagramReceiver, ReadAdapter};
-use super::ipv4_header::{Ipv4Header, Ipv4HeaderData, Ipv4HeaderMut};
+use super::ip_header::{IpHeader, IpHeaderData, IpHeaderMut};
+use super::ip_packet::{IpPacket, Ipv6Packet};
 use super::ipv4_packet::{Ipv4Packet, MAX_PACKET_LENGTH};
 use super::transport_header::{TransportHeader, TransportHeaderData, TransportHeaderMut};
 
@@ -26,28 +27,38 @@ pub struct Packetizer {
     buffer: Box<[u8; MAX_PACKET_LENGTH]>,
     transport_index: usize,
     payload_index: usize,
-    ipv4_header_data: Ipv4HeaderData,
+    ip_header_data: IpHeaderData,
     transport_header_data: TransportHeaderData,
 }
 
 impl Packetizer {
     pub fn new(
-        reference_ipv4_header: &Ipv4Header,
+        reference_ip_header: &IpHeader,
         reference_transport_header: &TransportHeader,
     ) -> Self {
         let mut buffer = Box::new([0; MAX_PACKET_LENGTH]);
 
-        let transport_index = reference_ipv4_header.header_length() as usize;
+        let transport_index = reference_ip_header.header_length() as usize;
         let payload_index = transport_index + reference_transport_header.header_length() as usize;
 
-        let mut ipv4_header_data = reference_ipv4_header.data().clone();
+        let mut ip_header_data = reference_ip_header.data_clone();
         let mut transport_header_data = reference_transport_header.data_clone();
 
         {
-            let ipv4_header_raw = &mut buffer[..transport_index];
-            ipv4_header_raw.copy_from_slice(reference_ipv4_header.raw());
-            let mut ipv4_header = ipv4_header_data.bind_mut(ipv4_header_raw);
-            ipv4_header.swap_source_and_destination();
+            let ip_header_raw = &mut buffer[..transport_index];
+            ip_header_raw.copy_from_slice(reference_ip_header.raw());
+            let _ip_header = match &mut ip_header_data {
+                IpHeaderData::V4(v4) => {
+                    let mut h = v4.bind_mut(ip_header_raw);
+                    h.swap_source_and_destination();
+                    IpHeaderMut::V4(h)
+                }
+                IpHeaderData::V6(v6) => {
+                    let mut h = v6.bind_mut(ip_header_raw);
+                    h.swap_source_and_destination();
+                    IpHeaderMut::V6(h)
+                }
+            };
         }
 
         {
@@ -61,19 +72,19 @@ impl Packetizer {
             buffer,
             transport_index,
             payload_index,
-            ipv4_header_data,
+            ip_header_data,
             transport_header_data,
         }
     }
 
-    pub fn packetize_empty_payload(&mut self) -> Ipv4Packet {
+    pub fn packetize_empty_payload(&mut self) -> IpPacket<'_> {
         self.build(0)
     }
 
-    pub fn packetize<R: DatagramReceiver>(&mut self, source: &mut R) -> io::Result<Ipv4Packet> {
+    pub fn packetize<R: DatagramReceiver>(&mut self, source: &mut R) -> io::Result<IpPacket<'_>> {
         let r = source.recv(&mut self.buffer[self.payload_index..])?;
-        let ipv4_packet = self.build(r as u16);
-        Ok(ipv4_packet)
+        let ip_packet = self.build(r as u16);
+        Ok(ip_packet)
     }
 
     /// Packetize from stream (`Read`) source.
@@ -85,50 +96,76 @@ impl Packetizer {
         &mut self,
         source: &mut R,
         max_chunk_size: Option<usize>,
-    ) -> io::Result<Option<Ipv4Packet>> {
+    ) -> io::Result<Option<IpPacket<'_>>> {
         let mut adapter = ReadAdapter::new(source, max_chunk_size);
         let r = adapter.recv(&mut self.buffer[self.payload_index..])?;
         let option = if r > 0 {
-            let ipv4_packet = self.build(r as u16);
-            Some(ipv4_packet)
+            let ip_packet = self.build(r as u16);
+            Some(ip_packet)
         } else {
             None
         };
         Ok(option)
     }
 
-    pub fn ipv4_header_mut(&mut self) -> Ipv4HeaderMut {
+    pub fn ip_header_mut(&mut self) -> IpHeaderMut<'_> {
         let raw = &mut self.buffer[..self.transport_index];
-        self.ipv4_header_data.bind_mut(raw)
+        match &mut self.ip_header_data {
+            IpHeaderData::V4(v4) => IpHeaderMut::V4(v4.bind_mut(raw)),
+            IpHeaderData::V6(v6) => IpHeaderMut::V6(v6.bind_mut(raw)),
+        }
     }
 
-    pub fn transport_header_mut(&mut self) -> TransportHeaderMut {
+    pub fn transport_header_mut(&mut self) -> TransportHeaderMut<'_> {
         let raw = &mut self.buffer[self.transport_index..self.payload_index];
         self.transport_header_data.bind_mut(raw)
     }
 
-    fn build(&mut self, payload_length: u16) -> Ipv4Packet {
+    fn build(&mut self, payload_length: u16) -> IpPacket<'_> {
         let total_length = self.payload_index as u16 + payload_length;
 
-        self.ipv4_header_mut().set_total_length(total_length);
+        self.ip_header_mut().set_total_length(total_length);
         self.transport_header_mut()
             .set_payload_length(payload_length);
 
-        let mut ipv4_packet = Ipv4Packet::new(
-            &mut self.buffer[..total_length as usize],
-            self.ipv4_header_data.clone(),
-            self.transport_header_data.clone(),
-        );
-        ipv4_packet.compute_checksums();
-        ipv4_packet
+        let ip_data = self.ip_header_data.clone();
+
+        match ip_data {
+            IpHeaderData::V4(ref v4) => {
+                let mut p = IpPacket::V4(Ipv4Packet::new(
+                    &mut self.buffer[..total_length as usize],
+                    v4.clone(),
+                    self.transport_header_data.clone(),
+                ));
+                p.compute_checksums();
+                p
+            }
+            IpHeaderData::V6(ref v6) => {
+                let mut p = IpPacket::V6(Ipv6Packet::new(
+                    &mut self.buffer[..total_length as usize],
+                    v6.clone(),
+                    self.transport_header_data.clone(),
+                ));
+                p.compute_checksums();
+                p
+            }
+        }
     }
 
-    pub fn inflate(&mut self, packet_length: u16) -> Ipv4Packet {
-        Ipv4Packet::new(
-            &mut self.buffer[..packet_length as usize],
-            self.ipv4_header_data.clone(),
-            self.transport_header_data.clone(),
-        )
+    pub fn inflate(&mut self, packet_length: u16) -> IpPacket<'_> {
+        let ip_data = self.ip_header_data.clone();
+        match ip_data {
+            IpHeaderData::V4(ref v4) => IpPacket::V4(Ipv4Packet::new(
+                &mut self.buffer[..packet_length as usize],
+                v4.clone(),
+                self.transport_header_data.clone(),
+            )),
+            IpHeaderData::V6(ref v6) => IpPacket::V6(Ipv6Packet::new(
+                &mut self.buffer[..packet_length as usize],
+                v6.clone(),
+                self.transport_header_data.clone(),
+            )),
+        }
     }
 }
 
@@ -136,10 +173,11 @@ impl Packetizer {
 mod tests {
     use super::*;
     use crate::relay::datagram::tests::MockDatagramSocket;
+    use crate::relay::ipv4_packet::Ipv4Packet as V4Packet;
     use byteorder::{BigEndian, WriteBytesExt};
     use std::io;
 
-    fn create_packet() -> Vec<u8> {
+    fn create_v4_packet() -> Vec<u8> {
         let mut raw = Vec::new();
         raw.write_u8(4u8 << 4 | 5).unwrap();
         raw.write_u8(0).unwrap(); // ToS
@@ -162,58 +200,79 @@ mod tests {
 
     #[test]
     fn merge_headers_and_payload() {
-        let raw = &mut create_packet()[..];
-        let reference_packet = Ipv4Packet::parse(raw);
+        let raw = &mut create_v4_packet()[..];
+        let reference_packet = V4Packet::parse(raw);
 
         let data = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let mut mock = MockDatagramSocket::from_data(&data);
 
         let ipv4_header = reference_packet.ipv4_header();
         let transport_header = reference_packet.transport_header().unwrap();
-        let mut packetizer = Packetizer::new(&ipv4_header, &transport_header);
+        let ip_header = IpHeader::V4(ipv4_header);
+        let mut packetizer = Packetizer::new(&ip_header, &transport_header);
 
         let packet = packetizer.packetize(&mut mock).unwrap();
-        assert_eq!(36, packet.ipv4_header_data().total_length());
-        assert_eq!(data, &packet.raw()[28..36]);
+        match &packet {
+            IpPacket::V4(p) => {
+                assert_eq!(36, p.ipv4_header_data().total_length());
+                assert_eq!(data, &p.raw()[28..36]);
+            }
+            _ => panic!("Expected V4 packet"),
+        }
     }
 
     #[test]
     fn last_packet() {
-        let raw = &mut create_packet()[..];
-        let reference_packet = Ipv4Packet::parse(raw);
+        let raw = &mut create_v4_packet()[..];
+        let reference_packet = V4Packet::parse(raw);
 
         let data = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let mut mock = MockDatagramSocket::from_data(&data);
 
         let ipv4_header = reference_packet.ipv4_header();
         let transport_header = reference_packet.transport_header().unwrap();
-        let mut packetizer = Packetizer::new(&ipv4_header, &transport_header);
+        let ip_header = IpHeader::V4(ipv4_header);
+        let mut packetizer = Packetizer::new(&ip_header, &transport_header);
 
-        let packet_length = packetizer.packetize(&mut mock).unwrap().length();
+        let packet_length = match packetizer.packetize(&mut mock).unwrap() {
+            IpPacket::V4(ref p) => p.length(),
+            _ => panic!("Expected V4 packet"),
+        };
         let packet = packetizer.inflate(packet_length);
-        assert_eq!(36, packet.ipv4_header_data().total_length());
-        assert_eq!(data, &packet.raw()[28..36]);
+        match &packet {
+            IpPacket::V4(p) => {
+                assert_eq!(36, p.ipv4_header_data().total_length());
+                assert_eq!(data, &p.raw()[28..36]);
+            }
+            _ => panic!("Expected V4 packet"),
+        }
     }
 
     #[test]
     fn packetize_chunks() {
-        let raw = &mut create_packet()[..];
-        let reference_packet = Ipv4Packet::parse(raw);
+        let raw = &mut create_v4_packet()[..];
+        let reference_packet = V4Packet::parse(raw);
 
         let data = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let mut cursor = io::Cursor::new(&data);
 
         let ipv4_header = reference_packet.ipv4_header();
         let transport_header = reference_packet.transport_header().unwrap();
-        let mut packetizer = Packetizer::new(&ipv4_header, &transport_header);
+        let ip_header = IpHeader::V4(ipv4_header);
+        let mut packetizer = Packetizer::new(&ip_header, &transport_header);
 
         {
             let packet = packetizer
                 .packetize_read(&mut cursor, Some(2))
                 .unwrap()
                 .unwrap();
-            assert_eq!(30, packet.ipv4_header_data().total_length());
-            assert_eq!([0x11, 0x22], packet.payload().unwrap());
+            match &packet {
+                IpPacket::V4(p) => {
+                    assert_eq!(30, p.ipv4_header_data().total_length());
+                    assert_eq!([0x11, 0x22], p.payload().unwrap());
+                }
+                _ => panic!("Expected V4 packet"),
+            }
         }
 
         {
@@ -221,8 +280,13 @@ mod tests {
                 .packetize_read(&mut cursor, Some(3))
                 .unwrap()
                 .unwrap();
-            assert_eq!(31, packet.ipv4_header_data().total_length());
-            assert_eq!([0x33, 0x44, 0x55], packet.payload().unwrap());
+            match &packet {
+                IpPacket::V4(p) => {
+                    assert_eq!(31, p.ipv4_header_data().total_length());
+                    assert_eq!([0x33, 0x44, 0x55], p.payload().unwrap());
+                }
+                _ => panic!("Expected V4 packet"),
+            }
         }
 
         {
@@ -230,8 +294,13 @@ mod tests {
                 .packetize_read(&mut cursor, Some(1024))
                 .unwrap()
                 .unwrap();
-            assert_eq!(31, packet.ipv4_header_data().total_length());
-            assert_eq!([0x66, 0x77, 0x88], packet.payload().unwrap());
+            match &packet {
+                IpPacket::V4(p) => {
+                    assert_eq!(31, p.ipv4_header_data().total_length());
+                    assert_eq!([0x66, 0x77, 0x88], p.payload().unwrap());
+                }
+                _ => panic!("Expected V4 packet"),
+            }
         }
     }
 }

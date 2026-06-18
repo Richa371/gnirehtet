@@ -37,7 +37,7 @@ pub struct Ipv4HeaderData {
     destination: u32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -69,36 +69,29 @@ impl Ipv4HeaderData {
         Ipv4HeaderMut::new(raw, self)
     }
 
+    #[inline]
     pub fn header_length(&self) -> u8 {
         self.header_length
     }
 
+    #[inline]
     pub fn total_length(&self) -> u16 {
         self.total_length
     }
 
+    #[inline]
     pub fn protocol(&self) -> Protocol {
         self.protocol
     }
 
+    #[inline]
     pub fn source(&self) -> u32 {
         self.source
     }
 
+    #[inline]
     pub fn destination(&self) -> u32 {
         self.destination
-    }
-}
-
-pub fn peek_version_length(raw: &[u8]) -> Option<(u8, u16)> {
-    if raw.len() >= 4 {
-        // version is stored in the 4 first bits
-        let version = raw[0] >> 4;
-        // packet length is 16 bits starting at offset 2
-        let length = BigEndian::read_u16(&raw[2..4]);
-        Some((version, length))
-    } else {
-        None
     }
 }
 
@@ -109,36 +102,40 @@ macro_rules! ipv4_header_common {
         #[allow(dead_code)]
         impl<'a> $name<'a> {
             pub fn new(raw: $raw_type, data: $data_type) -> Self {
-                Self {
-                    raw: raw,
-                    data: data,
-                }
+                Self { raw, data }
             }
 
+            #[inline]
             pub fn raw(&self) -> &[u8] {
                 self.raw
             }
 
+            #[inline]
             pub fn data(&self) -> &Ipv4HeaderData {
                 self.data
             }
 
+            #[inline]
             pub fn header_length(&self) -> u8 {
                 self.data.header_length
             }
 
+            #[inline]
             pub fn total_length(&self) -> u16 {
                 self.data.total_length
             }
 
+            #[inline]
             pub fn protocol(&self) -> Protocol {
                 self.data.protocol
             }
 
+            #[inline]
             pub fn source(&self) -> u32 {
                 self.data.source
             }
 
+            #[inline]
             pub fn destination(&self) -> u32 {
                 self.data.destination
             }
@@ -152,10 +149,12 @@ ipv4_header_common!(Ipv4HeaderMut, &'a mut [u8], &'a mut Ipv4HeaderData);
 // additional methods for the mutable version
 #[allow(dead_code)]
 impl<'a> Ipv4HeaderMut<'a> {
+    #[inline]
     pub fn raw_mut(&mut self) -> &mut [u8] {
         self.raw
     }
 
+    #[inline]
     pub fn data_mut(&mut self) -> &mut Ipv4HeaderData {
         self.data
     }
@@ -289,21 +288,5 @@ mod tests {
         }
         let sum = !sum as u16;
         assert_eq!(sum, header.checksum());
-    }
-
-    #[test]
-    fn peek_version_length_unavailable() {
-        let raw: [u8; 0] = [];
-        assert!(peek_version_length(&raw).is_none());
-        let raw = [0x40, 2];
-        assert!(peek_version_length(&raw).is_none());
-    }
-
-    #[test]
-    fn peek_version_length_available() {
-        let raw = [4u8 << 4 | 5, 0, 0x01, 0x23];
-        let (version, length) = peek_version_length(&raw).unwrap();
-        assert_eq!(4, version);
-        assert_eq!(0x123, length);
     }
 }

@@ -23,6 +23,11 @@ public class GnirehtetActivity extends Activity {
 
     public static final String EXTRA_DNS_SERVERS = "dnsServers";
     public static final String EXTRA_ROUTES = "routes";
+    public static final String EXTRA_PROXY_HOST_PORT = "proxyHostPort";
+    public static final String EXTRA_PROXY_EXCLUSION_LIST = "proxyExclusionList";
+    public static final String EXTRA_MTU = "mtu";
+    public static final String EXTRA_ALLOW_APPS = "allowApps";
+    public static final String EXTRA_DENY_APPS = "denyApps";
 
     private static final int VPN_REQUEST_CODE = 0;
 
@@ -59,7 +64,21 @@ public class GnirehtetActivity extends Activity {
         if (routes == null) {
             routes = new String[0];
         }
-        return new VpnConfiguration(Net.toInetAddresses(dnsServers), Net.toCIDRs(routes));
+        String proxyHostPort = intent.getStringExtra(EXTRA_PROXY_HOST_PORT);
+        String[] proxyExclusionList = intent.getStringArrayExtra(EXTRA_PROXY_EXCLUSION_LIST);
+        if (proxyExclusionList == null) {
+            proxyExclusionList = new String[0];
+        }
+        int mtu = intent.getIntExtra(EXTRA_MTU, 0x4000);
+        String[] allowApps = intent.getStringArrayExtra(EXTRA_ALLOW_APPS);
+        if (allowApps == null) {
+            allowApps = new String[0];
+        }
+        String[] denyApps = intent.getStringArrayExtra(EXTRA_DENY_APPS);
+        if (denyApps == null) {
+            denyApps = new String[0];
+        }
+        return new VpnConfiguration(Net.toInetAddresses(dnsServers), Net.toCIDRs(routes), proxyHostPort, proxyExclusionList, mtu, allowApps, denyApps);
     }
 
     private boolean startGnirehtet(VpnConfiguration config) {

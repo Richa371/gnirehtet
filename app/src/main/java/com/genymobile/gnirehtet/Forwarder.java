@@ -101,11 +101,10 @@ public class Forwarder {
             }
             if (r > 0) {
                 int version = buffer[0] >> 4;
-                if (version == 4) {
+                if (version == 4 || version == 6) {
                     // blocking send
                     tunnel.send(buffer, r);
                 } else {
-                    // see <https://github.com/Genymobile/gnirehtet/issues/69>
                     Log.w(TAG, "Unexpected packet IP version: " + version);
                 }
             } else {

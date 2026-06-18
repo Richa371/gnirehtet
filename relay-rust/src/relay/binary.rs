@@ -20,6 +20,7 @@ use std::fmt::Write;
 
 const MAX_STRING_PACKET_SIZE: usize = 20;
 
+#[allow(dead_code)]
 pub fn to_byte_array(value: u32) -> [u8; 4] {
     let mut raw = [0u8; 4];
     BigEndian::write_u32(&mut raw, value);
@@ -32,21 +33,12 @@ pub fn build_packet_string(data: &[u8]) -> String {
     for (i, &byte) in data.iter().take(limit).enumerate() {
         if i != 0 {
             let sep = if (i % 4) == 0 { "  " } else { " " };
-            write!(&mut s, "{}", sep).unwrap();
+            let _ = write!(&mut s, "{}", sep);
         }
-        write!(&mut s, "{:02X}", byte).unwrap();
+        let _ = write!(&mut s, "{:02X}", byte);
     }
     if limit < data.len() {
-        write!(&mut s, "  ... +{} bytes", data.len() - limit).unwrap();
+        let _ = write!(&mut s, "  ... +{} bytes", data.len() - limit);
     }
     s
-}
-
-// only compare the data part for fat pointers (ignore the vtable part)
-// for some (buggy) reason, the vtable part may be different even if the data reference the same
-// object
-// See <https://github.com/Genymobile/gnirehtet/issues/61#issuecomment-370933770>
-pub fn ptr_data_eq<T: ?Sized>(lhs: *const T, rhs: *const T) -> bool {
-    // cast to thin pointers to ignore the vtable part
-    lhs as *const () == rhs as *const ()
 }

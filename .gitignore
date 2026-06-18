@@ -3,3 +3,7 @@ build/
 .idea/
 *.iml
 /local.properties
+relay-rust/target/
+*.apk
+*.zip
+dist/

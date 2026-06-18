@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-use super::ipv4_header::Ipv4HeaderData;
+use super::ip_header::IpHeaderData;
 use byteorder::{BigEndian, ByteOrder};
 use std::mem;
 
@@ -73,10 +73,7 @@ macro_rules! udp_header_common {
         #[allow(dead_code)]
         impl<'a> $name<'a> {
             pub fn new(raw: $raw_type, data: $data_type) -> Self {
-                Self {
-                    raw: raw,
-                    data: data,
-                }
+                Self { raw, data }
             }
 
             #[inline]
@@ -149,7 +146,7 @@ impl<'a> UdpHeaderMut<'a> {
     }
 
     #[inline]
-    pub fn update_checksum(&mut self, _ipv4_header_data: &Ipv4HeaderData, _payload: &[u8]) {
+    pub fn update_checksum(&mut self, _ip_header_data: &IpHeaderData, _payload: &[u8]) {
         // disable checksum validation
         self.set_checksum(0);
     }

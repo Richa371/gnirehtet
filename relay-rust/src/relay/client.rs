@@ -14,96 +14,58 @@
  * limitations under the License.
  */
 
-use log::*;
-use mio::net::TcpStream;
-use mio::{Event, PollOpt, Ready, Token};
-use std::cell::RefCell;
-use std::io::{self, Write};
-use std::mem;
-use std::net::Shutdown;
-use std::rc::Rc;
+//! Handles I/O with one Android device over a reverse-tunnel TCP connection.
+//! Reads raw IP packets from the device and routes them to the network,
+//! then sends back any response packets.
 
-use super::binary;
+use log::*;
+use std::cell::RefCell;
+use std::io::{self, Cursor, Read, Write};
+use std::mem;
+use std::net::TcpStream;
+use std::rc::Rc;
+use std::time::Duration;
+
 use super::close_listener::CloseListener;
-use super::ipv4_packet::{Ipv4Packet, MAX_PACKET_LENGTH};
-use super::ipv4_packet_buffer::Ipv4PacketBuffer;
+use super::ip_packet::IpPacket;
+use super::ip_packet_buffer::IpPacketBuffer;
+use super::ipv4_packet::MAX_PACKET_LENGTH;
 use super::packet_source::PacketSource;
 use super::router::Router;
-use super::selector::Selector;
 use super::stream_buffer::StreamBuffer;
 
 const TAG: &str = "Client";
 
 pub struct Client {
+    #[allow(dead_code)]
     id: u32,
-    stream: TcpStream,
-    interests: Ready,
-    token: Token,
-    client_to_network: Ipv4PacketBuffer,
+    client_to_network: IpPacketBuffer,
     network_to_client: StreamBuffer,
     router: Router,
-    close_listener: Box<dyn CloseListener<Client>>,
     closed: bool,
+    close_listener: Box<dyn CloseListener<Client>>,
     pending_packet_sources: Vec<Rc<RefCell<dyn PacketSource>>>,
-    // number of remaining bytes of "id" to send to the client before relaying any data
-    pending_id_bytes: usize,
 }
 
 /// Channel for connections to send back data immediately to the client
 pub struct ClientChannel<'a> {
     network_to_client: &'a mut StreamBuffer,
-    stream: &'a TcpStream,
-    token: Token,
-    interests: &'a mut Ready,
 }
 
 impl<'a> ClientChannel<'a> {
-    fn new(
-        network_to_client: &'a mut StreamBuffer,
-        stream: &'a TcpStream,
-        token: Token,
-        interests: &'a mut Ready,
-    ) -> Self {
-        Self {
-            network_to_client,
-            stream,
-            token,
-            interests,
-        }
+    fn new(network_to_client: &'a mut StreamBuffer) -> Self {
+        Self { network_to_client }
     }
 
-    // Functionally equivalent to Client::send_to_client(), except that it does not require to
-    // mutably borrow the whole client.
-    pub fn send_to_client(
-        &mut self,
-        selector: &mut Selector,
-        ipv4_packet: &Ipv4Packet,
-    ) -> io::Result<()> {
-        if ipv4_packet.length() as usize <= self.network_to_client.remaining() {
-            self.network_to_client.read_from(ipv4_packet.raw());
-            self.update_interests(selector);
+    /// Write an IP packet into the outgoing buffer to the device.
+    /// Returns `WouldBlock` if the buffer is full.
+    pub fn send_to_client(&mut self, ip_packet: &IpPacket) -> io::Result<()> {
+        if ip_packet.length() as usize <= self.network_to_client.remaining() {
+            self.network_to_client.read_from(ip_packet.raw());
             Ok(())
         } else {
             warn!(target: TAG, "Client buffer full");
-            Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Client buffer full",
-            ))
-        }
-    }
-
-    fn update_interests(&mut self, selector: &mut Selector) {
-        let ready = if self.network_to_client.is_empty() {
-            Ready::readable()
-        } else {
-            Ready::readable() | Ready::writable()
-        };
-        if *self.interests != ready {
-            // interests must be changed
-            *self.interests = ready;
-            selector
-                .reregister(self.stream, self.token, ready, PollOpt::level())
-                .expect("Cannot register on poll");
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "Client buffer full"))
         }
     }
 }
@@ -111,163 +73,57 @@ impl<'a> ClientChannel<'a> {
 impl Client {
     pub fn create(
         id: u32,
-        selector: &mut Selector,
-        stream: TcpStream,
         close_listener: Box<dyn CloseListener<Client>>,
     ) -> io::Result<Rc<RefCell<Self>>> {
-        // on start, we are interested only in writing (we must first send the client id)
-        let interests = Ready::writable();
         let rc = Rc::new(RefCell::new(Self {
             id,
-            stream,
-            interests,
-            token: Token(0), // default value, will be set afterwards
-            client_to_network: Ipv4PacketBuffer::new(),
+            client_to_network: IpPacketBuffer::new(),
             network_to_client: StreamBuffer::new(16 * MAX_PACKET_LENGTH),
             router: Router::new(),
             closed: false,
             close_listener,
             pending_packet_sources: Vec::new(),
-            pending_id_bytes: 4,
         }));
 
         {
             let mut self_ref = rc.borrow_mut();
-            // set client as router owner
             self_ref.router.set_client(Rc::downgrade(&rc));
-
-            let rc2 = rc.clone();
-            // must anotate selector type: https://stackoverflow.com/a/44004103/1987178
-            let handler =
-                move |selector: &mut Selector, event| rc2.borrow_mut().on_ready(selector, event);
-            let token =
-                selector.register(&self_ref.stream, handler, interests, PollOpt::level())?;
-            self_ref.token = token;
         }
         Ok(rc)
     }
 
+    #[allow(dead_code)]
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    #[allow(dead_code)]
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     pub fn router(&mut self) -> &mut Router {
         &mut self.router
     }
 
-    pub fn channel(&mut self) -> ClientChannel {
-        ClientChannel::new(
-            &mut self.network_to_client,
-            &self.stream,
-            self.token,
-            &mut self.interests,
-        )
+    pub fn channel(&mut self) -> ClientChannel<'_> {
+        ClientChannel::new(&mut self.network_to_client)
     }
 
-    fn close(&mut self, selector: &mut Selector) {
+    fn close(&mut self) {
         self.closed = true;
-        selector.deregister(&self.stream, self.token).unwrap();
-        // shutdown only (there is no close), the socket will be closed on drop
-        if self.stream.shutdown(Shutdown::Both).is_err() {
-            warn!(target: TAG, "Cannot shutdown client socket");
-        }
-        self.router.clear(selector);
+        self.router.clear();
+        self.pending_packet_sources.clear();
         self.close_listener.on_closed(self);
     }
 
-    fn on_ready(&mut self, selector: &mut Selector, event: Event) {
-        #[allow(clippy::match_wild_err_arm)]
-        match self.process(selector, event) {
-            Ok(_) => (),
-            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                debug!(target: TAG, "Spurious event, ignoring")
-            }
-            Err(_) => panic!("Unexpected unhandled error"),
-        }
-    }
-
-    // return Err(err) with err.kind() == io::ErrorKind::WouldBlock on spurious event
-    fn process(&mut self, selector: &mut Selector, event: Event) -> io::Result<()> {
-        if !self.closed {
-            let ready = event.readiness();
-            if ready.is_writable() {
-                self.process_send(selector)?;
-            }
-            if !self.closed && ready.is_readable() {
-                self.process_receive(selector)?;
-            }
-            if !self.closed {
-                self.update_interests(selector);
-            }
-        }
-        Ok(())
-    }
-
-    // return Err(err) with err.kind() == io::ErrorKind::WouldBlock on spurious event
-    fn process_send(&mut self, selector: &mut Selector) -> io::Result<()> {
-        if self.must_send_id() {
-            match self.send_id() {
-                Ok(_) => {
-                    if self.pending_id_bytes == 0 {
-                        debug!(target: TAG, "Client id #{} sent to client", self.id);
-                    }
-                }
-                Err(err) => {
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        // rethrow
-                        return Err(err);
-                    }
-                    error!(target: TAG, "Cannot write client id #{}", self.id);
-                    self.close(selector);
-                }
-            }
-        } else {
-            match self.write() {
-                Ok(_) => self.process_pending(selector),
-                Err(err) => {
-                    error!(target: TAG, "Cannot write: [{:?}] {}", err.kind(), err);
-                    self.close(selector);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    // return Err(err) with err.kind() == io::ErrorKind::WouldBlock on spurious event
-    fn process_receive(&mut self, selector: &mut Selector) -> io::Result<()> {
-        match self.read() {
-            Ok(true) => self.push_to_network(selector),
-            Ok(false) => {
-                debug!(target: TAG, "EOF reached");
-                self.close(selector);
-            }
-            Err(err) => {
-                if err.kind() == io::ErrorKind::WouldBlock {
-                    // rethrow
-                    return Err(err);
-                }
-                error!(target: TAG, "Cannot read: [{:?}] {}", err.kind(), err);
-                self.close(selector);
-            }
-        }
-        Ok(())
-    }
-
-    pub fn send_to_client(
-        &mut self,
-        selector: &mut Selector,
-        ipv4_packet: &Ipv4Packet,
-    ) -> io::Result<()> {
-        if ipv4_packet.length() as usize <= self.network_to_client.remaining() {
-            self.network_to_client.read_from(ipv4_packet.raw());
-            self.update_interests(selector);
+    pub fn send_to_client(&mut self, ip_packet: &IpPacket) -> io::Result<()> {
+        if ip_packet.length() as usize <= self.network_to_client.remaining() {
+            self.network_to_client.read_from(ip_packet.raw());
             Ok(())
         } else {
             warn!(target: TAG, "Client buffer full");
-            Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Client buffer full",
-            ))
+            Err(io::Error::new(io::ErrorKind::WouldBlock, "Client buffer full"))
         }
     }
 
@@ -275,86 +131,214 @@ impl Client {
         self.pending_packet_sources.push(source);
     }
 
-    fn send_id(&mut self) -> io::Result<()> {
-        assert!(self.must_send_id());
-        let raw_id = binary::to_byte_array(self.id);
-        let w = self.stream.write(&raw_id[4 - self.pending_id_bytes..])?;
-        self.pending_id_bytes -= w;
-        Ok(())
+    pub fn clean_expired_connections(&mut self) {
+        self.router.clean_expired_connections();
     }
 
-    fn update_interests(&mut self, selector: &mut Selector) {
-        self.channel().update_interests(selector);
-    }
-
-    fn read(&mut self) -> io::Result<bool> {
-        self.client_to_network.read_from(&mut self.stream)
-    }
-
-    fn write(&mut self) -> io::Result<()> {
-        self.network_to_client.write_to(&mut self.stream)?;
-        Ok(())
-    }
-
-    fn push_to_network(&mut self, selector: &mut Selector) {
-        while self.push_one_packet_to_network(selector) {
-            self.client_to_network.next();
-        }
-    }
-
-    fn push_one_packet_to_network(&mut self, selector: &mut Selector) -> bool {
-        match self.client_to_network.as_ipv4_packet() {
-            Some(ref packet) => {
-                let mut client_channel = ClientChannel::new(
-                    &mut self.network_to_client,
-                    &self.stream,
-                    self.token,
-                    &mut self.interests,
-                );
-                self.router
-                    .send_to_network(selector, &mut client_channel, packet);
-                true
+    /// Process packets from the device: feed raw bytes and route complete packets.
+    /// Returns the number of complete packets routed.
+    pub fn feed_device_data(&mut self, data: &[u8]) -> usize {
+        let mut count = 0;
+        let mut cursor = Cursor::new(data);
+        if self.client_to_network.read_from(&mut cursor).unwrap_or(false) {
+            while let Some(packet) = self.client_to_network.as_ip_packet() {
+                let mut channel = ClientChannel::new(&mut self.network_to_client);
+                self.router.send_to_network(&mut channel, &packet);
+                self.client_to_network.next();
+                count += 1;
             }
-            None => false,
         }
+        count
     }
 
-    fn process_pending(&mut self, selector: &mut Selector) {
+    /// Poll all network connections (TCP/UDP) for incoming/outgoing data.
+    pub fn poll_network_connections(&mut self) {
+        self.router.poll_connections();
+    }
+
+    /// Process pending packet sources (deferred packets that couldn't be sent before).
+    pub fn process_pending(&mut self) {
         let mut vec = Vec::new();
         mem::swap(&mut self.pending_packet_sources, &mut vec);
         for pending in vec.into_iter() {
             let consumed = {
                 let mut source = pending.borrow_mut();
-                let result = {
-                    let ipv4_packet = source
-                        .get()
-                        .expect("Unexpected pending source with no packet");
-                    self.send_to_client(selector, &ipv4_packet)
+                let result = match source.get() {
+                    Some(ip_packet) => self.send_to_client(&ip_packet),
+                    None => {
+                        warn!(target: TAG, "Pending packet source had no packet");
+                        continue;
+                    }
                 };
-                #[allow(clippy::match_wild_err_arm)]
                 match result {
                     Ok(_) => {
-                        source.next(selector);
+                        source.next();
                         true
                     }
                     Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => false,
-                    Err(_) => {
-                        panic!("Cannot send packet to client for unknown reason");
+                    Err(err) => {
+                        error!(target: TAG, "Cannot send packet to client: {}", err);
+                        false
                     }
                 }
             };
             if !consumed {
-                // keep it pending
                 self.pending_packet_sources.push(pending);
             }
         }
     }
 
-    pub fn clean_expired_connections(&mut self, selector: &mut Selector) {
-        self.router.clean_expired_connections(selector);
+    /// Drain the outgoing buffer into a Vec for writing to the stream.
+    pub fn drain_outgoing(&mut self) -> Vec<u8> {
+        let size = self.network_to_client.size();
+        if size == 0 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; size];
+        let mut cursor = Cursor::new(&mut buf[..]);
+        let _ = self.network_to_client.write_to(&mut cursor);
+        buf
     }
 
-    fn must_send_id(&self) -> bool {
-        self.pending_id_bytes > 0
+    /// Returns true if there is data to send to the device.
+    #[allow(dead_code)]
+    pub fn has_outgoing(&self) -> bool {
+        !self.network_to_client.is_empty()
     }
+
+    /// Entry point for a client connection. Uses blocking I/O on the TCP stream
+    /// (converted from tokio accept) and runs the sync relay loop.
+    /// Spawned onto a dedicated OS thread so the main async accept loop is not blocked.
+    pub fn run_blocking(tcp_stream: TcpStream) {
+        let mut stream = tcp_stream;
+        if let Err(e) = stream.set_nonblocking(true) {
+            error!(target: TAG, "Failed to set non-blocking: {}", e);
+            return;
+        }
+
+        // Read 4-byte client ID
+        let mut id_buf = [0u8; 4];
+        if read_exact(&mut stream, &mut id_buf).is_err() {
+            error!(target: TAG, "Failed to read client ID");
+            return;
+        }
+        // Echo client ID back
+        if write_all(&mut stream, &id_buf).is_err() {
+            error!(target: TAG, "Failed to write client ID");
+            return;
+        }
+        let id = u32::from_be_bytes(id_buf);
+        info!(target: TAG, "Client #{} connected", id);
+
+        let close_tx = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let close_rx = close_tx.clone();
+
+        let close_listener = Box::new(move |_: &Client| {
+            close_tx.store(true, std::sync::atomic::Ordering::SeqCst);
+        }) as Box<dyn CloseListener<Client>>;
+
+        let client_rc = match Self::create(id, close_listener) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(target: TAG, "Failed to create client state: {}", e);
+                return;
+            }
+        };
+
+        // Main loop: poll for I/O with basic timing
+        let mut read_buf = [0u8; MAX_PACKET_LENGTH];
+        let mut last_cleanup = std::time::Instant::now();
+
+        loop {
+            let mut made_progress = false;
+
+            // Read from device stream (non-blocking)
+            let mut client = client_rc.borrow_mut();
+            if client.closed || close_rx.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+
+            match stream.read(&mut read_buf) {
+                Ok(0) => {
+                    debug!(target: TAG, "Client #{} EOF received", id);
+                    client.close();
+                    break;
+                }
+                Ok(n) => {
+                    made_progress = true;
+                    client.feed_device_data(&read_buf[..n]);
+                    client.poll_network_connections();
+                }
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    error!(target: TAG, "Client #{} read error: {}", id, e);
+                    client.close();
+                    break;
+                }
+            }
+
+            // Poll network connections
+            if !client.closed {
+                client.poll_network_connections();
+                client.process_pending();
+            }
+
+            // Periodic cleanup
+            let now = std::time::Instant::now();
+            if now.duration_since(last_cleanup).as_secs() >= 5 {
+                client.clean_expired_connections();
+                last_cleanup = now;
+            }
+
+            // Flush outgoing data
+            let outgoing = client.drain_outgoing();
+            drop(client);
+
+            if !outgoing.is_empty() {
+                made_progress = true;
+                if write_all(&mut stream, &outgoing).is_err() {
+                    error!(target: TAG, "Client #{} write error", id);
+                    break;
+                }
+            }
+
+            if !made_progress {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        info!(target: TAG, "Client #{} disconnected", id);
+    }
+}
+
+/// Helper: read exactly `buf.len()` bytes from a non-blocking stream.
+fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buf.len() {
+        match stream.read(&mut buf[offset..]) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "eof")),
+            Ok(n) => offset += n,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Helper: write all bytes to a non-blocking stream.
+fn write_all(stream: &mut TcpStream, buf: &[u8]) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < buf.len() {
+        match stream.write(&buf[offset..]) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "write zero")),
+            Ok(n) => offset += n,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }

@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target:
+          - os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            archive-suffix: linux64
+            binary: gnirehtet
+          - os: ubuntu-latest
+            rust-target: aarch64-unknown-linux-gnu
+            archive-suffix: linux-arm64
+            binary: gnirehtet
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+            archive-suffix: macos64
+            binary: gnirehtet
+          - os: macos-latest
+            rust-target: aarch64-apple-darwin
+            archive-suffix: macos-arm64
+            binary: gnirehtet
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-gnu
+            archive-suffix: win64
+            binary: gnirehtet.exe
+          - os: windows-latest
+            rust-target: aarch64-pc-windows-msvc
+            archive-suffix: win-arm64
+            binary: gnirehtet.exe
+    runs-on: ${{ matrix.target.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust-target }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        run: ./gradlew :app:assembleRelease
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target.rust-target }} --manifest-path relay-rust/Cargo.toml
+
+      - name: Download ADB
+        shell: bash
+        run: |
+          PLATFORM="linux"
+          [[ "${{ matrix.target.os }}" == macos-* ]] && PLATFORM="darwin"
+          [[ "${{ matrix.target.os }}" == windows-* ]] && PLATFORM="windows"
+          curl -fLo /tmp/adb.zip "https://dl.google.com/android/repository/platform-tools-latest-${PLATFORM}.zip"
+          mkdir -p /tmp/adb-extract
+          unzip -o -j /tmp/adb.zip "platform-tools/adb*" -d /tmp/adb-extract
+          chmod +x /tmp/adb-extract/adb 2>/dev/null || true
+
+      - name: Package
+        shell: bash
+        run: |
+          ARCHIVE_DIR="gnirehtet-${{ matrix.target.archive-suffix }}"
+          mkdir -p "dist/$ARCHIVE_DIR"
+          cp "relay-rust/target/${{ matrix.target.rust-target }}/release/${{ matrix.target.binary }}" "dist/$ARCHIVE_DIR/gnirehtet$([[ "${{ matrix.target.os }}" == windows-* ]] && echo '.exe' || true)"
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/$ARCHIVE_DIR/gnirehtet.apk"
+          cp /tmp/adb-extract/* "dist/$ARCHIVE_DIR/"
+          cd dist
+          zip -r "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnirehtet-rust-${{ matrix.target.archive-suffix }}
+          path: dist/gnirehtet-rust-${{ matrix.target.archive-suffix }}.zip
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gnirehtet-rust-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum gnirehtet-rust-*.zip > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gnirehtet-rust-*.zip
+            SHA256SUMS.txt

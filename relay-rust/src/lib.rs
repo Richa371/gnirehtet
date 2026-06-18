@@ -14,7 +14,14 @@
  * limitations under the License.
  */
 
-mod relay;
+/*!
+# relaylib — Gnirehtet relay engine
+
+Relays raw IP packets from an Android device over ADB to real OS sockets.
+Handles TCP state machine, UDP virtual connections, IPv4 and IPv6.
+*/
+
+pub mod relay;
 pub use crate::relay::byte_buffer;
 
 use crate::relay::Relay;

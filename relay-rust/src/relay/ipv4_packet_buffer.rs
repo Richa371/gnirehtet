@@ -66,10 +66,9 @@ impl Ipv4PacketBuffer {
 
     pub fn next(&mut self) {
         // remove the packet in front of the buffer
-        let length = self
-            .available_packet_length()
-            .expect("next() called while there was no packet") as usize;
-        self.buf.consume(length);
+        if let Some(length) = self.available_packet_length() {
+            self.buf.consume(length as usize);
+        } // silently ignore if called without a packet
     }
 }
 

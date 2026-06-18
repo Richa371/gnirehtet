@@ -18,6 +18,7 @@ package com.genymobile.gnirehtet;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.net.ConnectivityManager;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -31,6 +32,7 @@ import android.util.Log;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.util.Arrays;
 import java.util.List;
 
 public class GnirehtetService extends VpnService {
@@ -44,8 +46,6 @@ public class GnirehtetService extends VpnService {
     private static final String TAG = GnirehtetService.class.getSimpleName();
 
     private static final InetAddress VPN_ADDRESS = Net.toInetAddress(new byte[] {10, 0, 0, 2});
-    // magic value: higher (like 0x8000 or 0xffff) or lower (like 1500) values show poorer performances
-    private static final int MTU = 0x4000;
 
     private final Notifier notifier = new Notifier(this);
     private final Handler handler = new RelayTunnelConnectionStateHandler(this);
@@ -119,6 +119,7 @@ public class GnirehtetService extends VpnService {
         if (routes.length == 0) {
             // no routes defined, redirect the whole network traffic
             builder.addRoute("0.0.0.0", 0);
+            builder.addRoute("::0", 0);
         } else {
             for (CIDR route : routes) {
                 builder.addRoute(route.getAddress(), route.getPrefixLength());
@@ -138,7 +139,30 @@ public class GnirehtetService extends VpnService {
         // non-blocking by default, but FileChannel is not selectable, that's stupid!
         // so switch to synchronous I/O to avoid polling
         builder.setBlocking(true);
-        builder.setMtu(MTU);
+        builder.setMtu(config.getMtu());
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            String proxyHostPort = config.getProxyHostPort();
+            if (proxyHostPort != null) {
+                String[] parts = proxyHostPort.split(":");
+                String host = parts[0];
+                int port = parts.length > 1 ? Integer.parseInt(parts[1]) : 8080;
+                android.net.ProxyInfo proxyInfo = android.net.ProxyInfo.buildDirectProxy(host, port, Arrays.asList(config.getProxyExclusionList()));
+                builder.setHttpProxy(proxyInfo);
+            }
+        }
+
+        // Per-app routing
+        try {
+            for (String pkg : config.getAllowApps()) {
+                builder.addAllowedApplication(pkg);
+            }
+            for (String pkg : config.getDenyApps()) {
+                builder.addDisallowedApplication(pkg);
+            }
+        } catch (NameNotFoundException e) {
+            Log.w(TAG, "Package not found for per-app routing", e);
+        }
 
         vpnInterface = builder.establish();
         if (vpnInterface == null) {

@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2017 Genymobile
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 use std::error;
 use std::fmt;
 use std::io;
@@ -21,11 +5,91 @@ use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
+// ANSI color codes for terminal output
+const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
+const RESET: &str = "\x1b[0m";
+
+/// Severity level for user-facing messages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Yellow — something is suboptimal but recoverable (latency, packet loss).
+    Warning,
+    /// Red — something failed and needs user action (disconnect, missing ADB).
+    Error,
+}
+
 #[derive(Debug)]
 pub enum CommandExecutionError {
     ProcessIo(ProcessIoError),
     ProcessStatus(ProcessStatusError),
     Io(io::Error),
+}
+
+impl CommandExecutionError {
+    pub fn severity(&self) -> Severity {
+        match self {
+            CommandExecutionError::Io(err) => {
+                // Connection resets and timeouts are warnings; real I/O faults are errors
+                match err.kind() {
+                    io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::WouldBlock => Severity::Warning,
+                    _ => Severity::Error,
+                }
+            }
+            CommandExecutionError::ProcessStatus(err) => {
+                // ADB exit code 1 often means device not found or command rejected
+                if matches!(err.termination, Termination::Value(1)) {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                }
+            }
+            CommandExecutionError::ProcessIo(_) => Severity::Error,
+        }
+    }
+
+    /// Return a human-readable suggestion for fixing this error.
+    pub fn suggestion(&self) -> &'static str {
+        match self {
+            CommandExecutionError::ProcessIo(err) => {
+                if err.error.kind() == io::ErrorKind::NotFound {
+                    "Install adb or set the ADB env var"
+                } else {
+                    "Run `adb start-server`. Try a different USB cable or port"
+                }
+            }
+            CommandExecutionError::ProcessStatus(err) => match err.termination {
+                Termination::Value(1) => {
+                    "Check `adb devices` shows your device and USB debugging is enabled"
+                }
+                Termination::Value(_) => {
+                    "Restart ADB: `adb kill-server && adb start-server`"
+                }
+                #[cfg(unix)]
+                Termination::Signal(_) => {
+                    "ADB was killed by the system. Restart the daemon"
+                }
+            },
+            CommandExecutionError::Io(err) => match err.kind() {
+                io::ErrorKind::NotFound => {
+                    "APK not found. Download from releases, build with `make apk`, or set GNIREHTET_APK"
+                }
+                io::ErrorKind::ConnectionRefused => {
+                    "Port in use or no device connected. Use `-p PORT` to change it"
+                }
+                io::ErrorKind::TimedOut => {
+                    "High latency or device disconnected. Check the cable"
+                }
+                io::ErrorKind::ConnectionReset => {
+                    "Connection reset. Cable issue or device unplugged"
+                }
+                _ => "Check USB connection and try again",
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -37,7 +101,7 @@ pub struct ProcessStatusError {
 #[derive(Debug)]
 pub struct ProcessIoError {
     cmd: Cmd,
-    error: io::Error,
+    pub error: io::Error,
 }
 
 #[derive(Debug)]
@@ -58,9 +122,9 @@ impl Termination {
         match status.code() {
             Some(code) => Termination::Value(code),
             #[cfg(unix)]
-            None => Termination::Signal(status.signal().unwrap()),
+            None => Termination::Signal(status.signal().unwrap_or(-1)),
             #[cfg(not(unix))]
-            None => panic!("Unexpected signal termination on non-unix system"),
+            None => Termination::Value(-1),
         }
     }
 }
@@ -97,11 +161,11 @@ impl fmt::Display for ProcessStatusError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.termination {
             Termination::Value(code) => {
-                write!(f, "Command {} returned with value {}", self.cmd, code)
+                write!(f, "{} returned {}", self.cmd, code)
             }
             #[cfg(unix)]
             Termination::Signal(sig) => {
-                write!(f, "Command {} terminated by signal {}", self.cmd, sig)
+                write!(f, "{} killed by signal {}", self.cmd, sig)
             }
         }
     }
@@ -117,7 +181,7 @@ impl ProcessIoError {
 
 impl fmt::Display for ProcessIoError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Command {} failed: {}", self.cmd, self.error)
+        write!(f, "{} failed: {}", self.cmd, self.error)
     }
 }
 
@@ -130,9 +194,9 @@ impl error::Error for ProcessIoError {
 impl fmt::Display for CommandExecutionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            CommandExecutionError::ProcessIo(ref err) => write!(f, "{}", err),
-            CommandExecutionError::ProcessStatus(ref err) => write!(f, "{}", err),
-            CommandExecutionError::Io(ref err) => write!(f, "IO error: {}", err),
+            CommandExecutionError::ProcessIo(ref err) => err.fmt(f),
+            CommandExecutionError::ProcessStatus(ref err) => err.fmt(f),
+            CommandExecutionError::Io(ref err) => write!(f, "IO: {}", err),
         }
     }
 }
@@ -163,4 +227,11 @@ impl From<io::Error> for CommandExecutionError {
     fn from(error: io::Error) -> Self {
         CommandExecutionError::Io(error)
     }
+}
+
+/// Print a formatted error with a suggestion. One line, no label.
+pub fn print_error(err: &CommandExecutionError) {
+    let severity_mark = if err.severity() == Severity::Error { "!" } else { "?" };
+    let prefix = if err.severity() == Severity::Error { RED } else { YELLOW };
+    eprintln!("{}{} {}. {}{}", prefix, severity_mark, err, err.suggestion(), RESET);
 }

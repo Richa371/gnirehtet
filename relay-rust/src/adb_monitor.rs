@@ -41,11 +41,12 @@ pub struct AdbMonitor {
     callback: Box<dyn AdbMonitorCallback>,
     buf: ByteBuffer,
     connected_devices: Vec<String>,
+    usb_only: bool,
 }
 
 impl AdbMonitor {
     const TRACK_DEVICES_REQUEST: &'static [u8] = b"0012host:track-devices";
-    const BUFFER_SIZE: usize = 1024;
+    const BUFFER_SIZE: usize = 65536;
     const RETRY_DELAY_ADB_DAEMON_OK: u64 = 1000;
     const RETRY_DELAY_ADB_DAEMON_KO: u64 = 5000;
 
@@ -54,7 +55,12 @@ impl AdbMonitor {
             callback,
             buf: ByteBuffer::new(Self::BUFFER_SIZE),
             connected_devices: Vec::new(),
+            usb_only: true,
         }
+    }
+
+    pub fn set_usb_only(&mut self, enabled: bool) {
+        self.usb_only = enabled;
     }
 
     pub fn monitor(&mut self) {
@@ -156,12 +162,54 @@ impl AdbMonitor {
 
     fn handle_packet(&mut self, packet: &str) {
         let current_connected_devices = self.parse_connected_devices(packet);
-        for serial in &current_connected_devices {
+        let filtered_devices = if self.usb_only {
+            self.filter_usb_only(&current_connected_devices)
+        } else {
+            current_connected_devices.clone()
+        };
+        for serial in &filtered_devices {
             if !self.connected_devices.contains(serial) {
                 self.callback.on_new_device_connected(serial.as_str());
             }
         }
-        self.connected_devices = current_connected_devices;
+        self.connected_devices = filtered_devices;
+    }
+
+    /// Run `adb devices -l` and return only those serials whose transport is USB.
+    fn filter_usb_only(&self, serials: &[String]) -> Vec<String> {
+        let output = process::Command::new("adb")
+            .args(["devices", "-l"])
+            .output();
+        let stdout = match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout[..]).to_string(),
+            _ => {
+                error!(target: TAG, "Failed to query adb devices -l for USB filtering");
+                return serials.to_vec();
+            }
+        };
+        let usb_serials: std::collections::HashSet<String> = stdout
+            .lines()
+            .filter(|line| {
+                // Lines look like: "0123456789abcdef device usb:123456789 product:..."
+                // TCP devices have "tcp:" in the transport field
+                !line.contains("tcp:")
+            })
+            .filter_map(|line| {
+                let mut split = line.split_whitespace();
+                let serial = split.next()?;
+                let state = split.next()?;
+                if state == "device" {
+                    Some(serial.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        serials
+            .iter()
+            .filter(|s| usb_serials.contains(s.as_str()))
+            .cloned()
+            .collect()
     }
 
     fn parse_connected_devices(&self, packet: &str) -> Vec<String> {
@@ -169,13 +217,11 @@ impl AdbMonitor {
             .lines()
             .filter_map(|line| {
                 let mut split = line.split_whitespace();
-                if let Some(serial) = split.next() {
-                    if let Some(state) = split.next() {
-                        if state == "device" {
-                            return Some(serial.to_string());
-                        }
+                if let Some(serial) = split.next()
+                    && let Some(state) = split.next()
+                    && state == "device" {
+                        return Some(serial.to_string());
                     }
-                }
                 None
             })
             .collect()
@@ -208,7 +254,7 @@ impl AdbMonitor {
     fn start_adb_daemon() -> bool {
         info!(target: TAG, "Restarting adb daemon");
         match process::Command::new("adb")
-            .args(&["start-server"])
+            .args(["start-server"])
             .status()
         {
             Ok(exit_status) => {
@@ -308,6 +354,7 @@ mod tests {
         let mut monitor = AdbMonitor::new(Box::new(move |serial: &str| {
             serial_clone.replace(Some(serial.to_string()));
         }));
+        monitor.set_usb_only(false);
         monitor.handle_packet("0123456789ABCDEF\tdevice\n");
 
         assert_eq!("0123456789ABCDEF", serial.borrow().as_ref().unwrap());
@@ -334,6 +381,7 @@ mod tests {
         let mut monitor = AdbMonitor::new(Box::new(move |serial: &str| {
             serials_clone.borrow_mut().push(serial.to_string());
         }));
+        monitor.set_usb_only(false);
         monitor.handle_packet("0123456789ABCDEF\tdevice\nFEDCBA9876543210\tdevice\n");
 
         let vec = serials.borrow();
@@ -350,6 +398,7 @@ mod tests {
         let mut monitor = AdbMonitor::new(Box::new(move |serial: &str| {
             serials_clone.borrow_mut().push(serial.to_string());
         }));
+        monitor.set_usb_only(false);
         monitor.handle_packet("0123456789ABCDEF\tdevice\nFEDCBA9876543210\tdevice\n");
         monitor.handle_packet("0123456789ABCDEF\tdevice\n");
         monitor.handle_packet("0123456789ABCDEF\tdevice\nFEDCBA9876543210\tdevice\n");

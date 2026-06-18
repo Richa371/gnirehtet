@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+use super::ip_header::IpHeaderData;
 use super::ipv4_header::Ipv4HeaderData;
 use byteorder::{BigEndian, ByteOrder};
 use std::mem;
@@ -138,10 +139,7 @@ macro_rules! tcp_header_common {
         #[allow(dead_code)]
         impl<'a> $name<'a> {
             pub fn new(raw: $raw_type, data: $data_type) -> Self {
-                Self {
-                    raw: raw,
-                    data: data,
-                }
+                Self { raw, data }
             }
 
             #[inline]
@@ -296,7 +294,14 @@ impl<'a> TcpHeaderMut<'a> {
         BigEndian::write_u16(&mut self.raw[16..18], checksum);
     }
 
-    pub fn update_checksum(&mut self, ipv4_header_data: &Ipv4HeaderData, payload: &[u8]) {
+    pub fn update_checksum(&mut self, ip_header_data: &IpHeaderData, payload: &[u8]) {
+        match ip_header_data {
+            IpHeaderData::V4(v4) => self.update_checksum_v4(v4, payload),
+            IpHeaderData::V6(v6) => self.update_checksum_v6(v6, payload),
+        }
+    }
+
+    fn update_checksum_v4(&mut self, ipv4_header_data: &Ipv4HeaderData, payload: &[u8]) {
         // pseudo-header checksum (cf rfc793 section 3.1)
         let source = ipv4_header_data.source();
         let destination = ipv4_header_data.destination();
@@ -304,7 +309,7 @@ impl<'a> TcpHeaderMut<'a> {
             ipv4_header_data.total_length() - u16::from(ipv4_header_data.header_length());
 
         let header_length = self.header_length();
-        debug_assert!(header_length % 2 == 0 && header_length >= 20);
+        debug_assert!(header_length.is_multiple_of(2) && header_length >= 20);
 
         let payload_length = transport_length - u16::from(header_length);
         debug_assert_eq!(
@@ -345,7 +350,7 @@ impl<'a> TcpHeaderMut<'a> {
                 sum += u32::from(*p.offset(1));
                 p = p.offset(2);
             }
-            if payload_length % 2 != 0 {
+            if !payload_length.is_multiple_of(2) {
                 // if payload length is odd, the last byte is considered high-order
                 hsum += u32::from(*payload.get_unchecked((payload_length - 1) as usize));
             }
@@ -359,11 +364,86 @@ impl<'a> TcpHeaderMut<'a> {
         }
         self.set_checksum(!sum as u16);
     }
+
+    fn update_checksum_v6(&mut self, ipv6_header_data: &super::ipv6_header::Ipv6HeaderData, payload: &[u8]) {
+        // IPv6 pseudo-header (RFC 2460):
+        //   source address (16 bytes) + destination address (16 bytes)
+        //   + upper-layer packet length (4 bytes) + next header (4 bytes, zero-padded)
+        let transport_length = ipv6_header_data.payload_length();
+
+        let header_length = self.header_length();
+        debug_assert!(header_length.is_multiple_of(2) && header_length >= 20);
+
+        let payload_length = transport_length - u16::from(header_length);
+        debug_assert_eq!(
+            payload_length as usize,
+            payload.len(),
+            "Payload length does not match"
+        );
+
+        let src = ipv6_header_data.source().octets();
+        let dst = ipv6_header_data.destination().octets();
+
+        let mut sum = 0u32;
+
+        // Add source address (8 x 16-bit words)
+        for i in 0..8 {
+            let word = u32::from(BigEndian::read_u16(&src[2 * i..2 * i + 2]));
+            sum += word;
+        }
+
+        // Add destination address (8 x 16-bit words)
+        for i in 0..8 {
+            let word = u32::from(BigEndian::read_u16(&dst[2 * i..2 * i + 2]));
+            sum += word;
+        }
+
+        // Add upper-layer packet length
+        sum += u32::from(transport_length);
+
+        // Add next header (TCP = 6, zero-padded to 32 bits)
+        sum += 6u32;
+
+        // reset checksum field
+        self.set_checksum(0);
+
+        // checksum computation
+        let mut hsum = 0u32; // high-order bytes sum
+
+        unsafe {
+            let mut p = self.raw.as_ptr();
+            let end = p.offset(header_length as isize);
+            while p < end {
+                hsum += u32::from(*p);
+                sum += u32::from(*p.offset(1));
+                p = p.offset(2);
+            }
+
+            let mut p = payload.as_ptr();
+            let end = p.offset(payload_length as isize - 1);
+            while p < end {
+                hsum += u32::from(*p);
+                sum += u32::from(*p.offset(1));
+                p = p.offset(2);
+            }
+            if !payload_length.is_multiple_of(2) {
+                hsum += u32::from(*payload.get_unchecked((payload_length - 1) as usize));
+            }
+        }
+
+        sum += hsum << 8;
+
+        while (sum & !0xFFFF) != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        self.set_checksum(!sum as u16);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::ip_header::IpHeaderData;
     use crate::relay::ipv4_packet::Ipv4Packet;
     use crate::relay::transport_header::TransportHeaderMut;
     use byteorder::{BigEndian, WriteBytesExt};
@@ -522,7 +602,8 @@ mod tests {
         if let Some((TransportHeaderMut::Tcp(ref mut tcp_header), ref payload)) = transport {
             // set a fake checksum value to assert that it is correctly computed
             tcp_header.set_checksum(0x79);
-            tcp_header.update_checksum(ipv4_header.data(), payload);
+            let ip_data = IpHeaderData::V4(ipv4_header.data().clone());
+            tcp_header.update_checksum(&ip_data, payload);
             let checksum = tcp_header.checksum();
 
             let expected_checksum = {
@@ -564,7 +645,8 @@ mod tests {
         if let Some((TransportHeaderMut::Tcp(ref mut tcp_header), ref payload)) = transport {
             // set a fake checksum value to assert that it is correctly computed
             tcp_header.set_checksum(0x79);
-            tcp_header.update_checksum(ipv4_header.data(), payload);
+            let ip_data = IpHeaderData::V4(ipv4_header.data().clone());
+            tcp_header.update_checksum(&ip_data, payload);
             let checksum = tcp_header.checksum();
 
             let expected_checksum = {
@@ -606,7 +688,8 @@ mod tests {
         if let Some((TransportHeaderMut::Tcp(ref mut tcp_header), ref payload)) = transport {
             // set a fake checksum value to assert that it is correctly computed
             tcp_header.set_checksum(0x79);
-            tcp_header.update_checksum(ipv4_header.data(), payload);
+            let ip_data = IpHeaderData::V4(ipv4_header.data().clone());
+            tcp_header.update_checksum(&ip_data, payload);
             let checksum = tcp_header.checksum();
 
             let expected_checksum = {
@@ -681,7 +764,8 @@ mod tests {
             use std::time::Instant;
             let start = Instant::now();
             for _ in 0..5000000 {
-                tcp_header.update_checksum(ipv4_header.data(), payload);
+                let ip_data = IpHeaderData::V4(ipv4_header.data().clone());
+                tcp_header.update_checksum(&ip_data, payload);
             }
             let duration = start.elapsed();
             let ms = duration.as_secs() * 1000 + duration.subsec_nanos() as u64 / 1000000;

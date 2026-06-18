@@ -1,21 +1,27 @@
 [package]
 name = "gnirehtet"
-version = "2.5.1"
+version = "2.6.0"
 authors = ["Romain Vimont <rom@rom1v.com>"]
-edition = "2018"
+edition = "2024"
+description = "Reverse tethering for Android — share your computer's internet with an Android device via USB/ADB"
+license = "Apache-2.0"
+repository = "https://github.com/Genymobile/gnirehtet"
+keywords = ["adb", "reverse-tethering", "android", "vpn", "tethering"]
+categories = ["network", "command-line-utilities"]
 
 [lib]
 name = "relaylib"
 path = "src/lib.rs"
 
 [dependencies]
-mio = "0.6"       # for async I/O
-slab = "0.4"      # helper for mio Tokens
-log = "0.4"       # for logs
-chrono = "0.4"    # for formatting timestamp in logs
-byteorder = "1.3" # for reading/writing binary
-rand = "0.7"      # for random TCP sequence number
-ctrlc = { version = "3.0", features = ["termination"] }     # for handling Ctrl+C
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+jiff = "0.2"
+byteorder = "1.5"
+rand = "0.9"
+clap = { version = "4", features = ["derive"] }
+socket2 = "0.5"
+libc = "0.2"
 
 [profile.release]
-lto = true     # link-time optimization
+lto = true

@@ -1,59 +1,72 @@
-/*
- * Copyright (C) 2017 Genymobile
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-use chrono::prelude::Local;
+use jiff::Zoned;
 use log::*;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
+use std::sync::Mutex;
 
 static LOGGER: SimpleLogger = SimpleLogger;
-const THRESHOLD: LevelFilter = LevelFilter::Info;
+static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
 pub struct SimpleLogger;
 
 impl Log for SimpleLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= THRESHOLD
+        metadata.level() <= current_level()
     }
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let date = Local::now();
-            let formatted_date = date.format("%Y-%m-%d %H:%M:%S%.3f");
+            let now = Zoned::now();
             let msg = format!(
-                "{} {} {}: {}",
-                formatted_date,
+                "{} {} {}: {}\n",
+                now.strftime("%Y-%m-%d %H:%M:%S%.3f"),
                 record.level(),
                 record.target(),
                 record.args()
             );
-            if record.level() == Level::Error {
-                eprintln!("{}", msg);
+            let mut file = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(ref mut f) = *file {
+                let _ = f.write_all(msg.as_bytes());
+            } else if record.level() == Level::Error {
+                let _ = io::stderr().write_all(msg.as_bytes());
             } else {
-                println!("{}", msg);
+                let _ = io::stdout().write_all(msg.as_bytes());
             }
         }
     }
 
     fn flush(&self) {
-        io::stdout().flush().unwrap();
-        io::stderr().flush().unwrap();
+        let file = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref f) = *file {
+            let _ = f.sync_all();
+        }
+        let _ = io::stdout().flush();
+        let _ = io::stderr().flush();
     }
 }
 
-pub fn init() -> Result<(), SetLoggerError> {
-    set_max_level(THRESHOLD);
+fn current_level() -> LevelFilter {
+    match std::env::var("RUST_LOG").unwrap_or_default().to_lowercase().as_str() {
+        "trace" => LevelFilter::Trace,
+        "debug" => LevelFilter::Debug,
+        "warn" => LevelFilter::Warn,
+        "error" => LevelFilter::Error,
+        _ => LevelFilter::Info,
+    }
+}
+
+pub fn init(log_file: Option<&str>) -> Result<(), SetLoggerError> {
+    if let Some(path) = log_file {
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => {
+                *LOG_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
+            }
+            Err(e) => {
+                eprintln!("Cannot open log file '{}': {}", path, e);
+            }
+        }
+    }
+    let level = current_level();
+    set_max_level(level);
     set_logger(&LOGGER)
 }

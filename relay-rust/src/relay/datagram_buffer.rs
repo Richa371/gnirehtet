@@ -85,8 +85,7 @@ impl DatagramBuffer {
                 target: TAG,
                 "Cannot write the whole datagram to the buffer (only {}/{})", w, length
             );
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Cannot write the whole datagram",
             ));
         }
@@ -101,8 +100,7 @@ impl DatagramBuffer {
             MAX_DATAGRAM_LENGTH
         );
         if !self.has_enough_space_for(length) {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Datagram buffer is full",
             ));
         }

@@ -56,7 +56,7 @@ public class IPPacketOutputStream extends OutputStream {
             throw new IOException("IPPacketOutputStream does not support writing more than one packet at a time");
         }
         // by design, the buffer must always have enough space for one packet
-        if (BuildConfig.DEBUG && len > buffer.remaining()) {
+        if (len > buffer.remaining()) {
             Log.e(TAG, len  + " must be <= than " + buffer.remaining());
             Log.e(TAG, buffer.toString());
             throw new AssertionError("Buffer is unexpectedly full");

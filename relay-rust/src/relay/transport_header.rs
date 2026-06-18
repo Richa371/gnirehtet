@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-use super::ipv4_header::{Ipv4HeaderData, Protocol};
+use super::ip_header::IpHeaderData;
+use super::ipv4_header::Protocol;
 use super::tcp_header::{TcpHeader, TcpHeaderData, TcpHeaderMut};
 use super::udp_header::{UdpHeader, UdpHeaderData, UdpHeaderMut, UDP_HEADER_LENGTH};
 
@@ -188,13 +189,13 @@ impl<'a> TransportHeaderMut<'a> {
     }
 
     #[inline]
-    pub fn update_checksum(&mut self, ipv4_header_data: &Ipv4HeaderData, payload: &[u8]) {
+    pub fn update_checksum(&mut self, ip_header_data: &IpHeaderData, payload: &[u8]) {
         match *self {
             TransportHeaderMut::Tcp(ref mut tcp_header) => {
-                tcp_header.update_checksum(ipv4_header_data, payload)
+                tcp_header.update_checksum(ip_header_data, payload)
             }
             TransportHeaderMut::Udp(ref mut udp_header) => {
-                udp_header.update_checksum(ipv4_header_data, payload)
+                udp_header.update_checksum(ip_header_data, payload)
             }
         }
     }

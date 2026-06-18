@@ -14,21 +14,15 @@
  * limitations under the License.
  */
 
-use chrono::Local;
-use log::*;
-use mio::Events;
-use std::cell::RefCell;
-use std::cmp::max;
-use std::io;
-use std::rc::Rc;
-use std::time::Duration;
+//! The relay engine: runs on tokio's multi-threaded runtime, accepting reverse-tunnel
+//! connections from Android devices and relaying IP packets to/from the internet.
 
-use super::selector::Selector;
-use super::tunnel_server::TunnelServer;
-use super::udp_connection::IDLE_TIMEOUT_SECONDS;
+use log::*;
+use std::io;
+
+use super::client::Client;
 
 const TAG: &str = "Relay";
-const CLEANING_INTERVAL_SECONDS: i64 = 60;
 
 pub struct Relay {
     port: u16,
@@ -39,41 +33,23 @@ impl Relay {
         Self { port }
     }
 
+    /// Start the relay server. Creates a tokio runtime and enters the async accept loop.
+    /// Accepted clients are handed off to dedicated OS threads.
     pub fn run(&self) -> io::Result<()> {
-        let mut selector = Selector::create().unwrap();
-        let tunnel_server = TunnelServer::create(self.port, &mut selector)?;
-        info!(target: TAG, "Relay server started");
-        self.poll_loop(&mut selector, &tunnel_server)
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(self.run_async())
     }
 
-    fn poll_loop(
-        &self,
-        selector: &mut Selector,
-        tunnel_server: &Rc<RefCell<TunnelServer>>,
-    ) -> io::Result<()> {
-        let mut events = Events::with_capacity(1024);
-        // no connection may expire before the UDP idle timeout delay
-        let mut next_cleaning_deadline = Local::now().timestamp() + IDLE_TIMEOUT_SECONDS as i64;
+    async fn run_async(&self) -> io::Result<()> {
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
+        info!(target: TAG, "Relay server started on port {}", self.port);
         loop {
-            retry_on_intr!({
-                let timeout_seconds = max(0, next_cleaning_deadline - Local::now().timestamp());
-                let timeout = Some(Duration::new(timeout_seconds as u64, 0));
-                selector.poll(&mut events, timeout)
-            })?;
-
-            let now = Local::now().timestamp();
-            if now >= next_cleaning_deadline {
-                tunnel_server.borrow_mut().clean_up(selector);
-                next_cleaning_deadline = now + CLEANING_INTERVAL_SECONDS;
-            } else if events.is_empty() {
-                debug!(
-                    target: TAG,
-                    "Spurious wakeup: poll() returned without any event"
-                );
-                continue;
-            }
-
-            selector.run_handlers(&events);
+            let (stream, peer) = listener.accept().await?;
+            debug!(target: TAG, "New connection from {}", peer);
+            let std_stream = stream.into_std()?;
+            std::thread::spawn(move || {
+                Client::run_blocking(std_stream);
+            });
         }
     }
 }

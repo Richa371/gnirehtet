@@ -32,6 +32,7 @@ impl StreamBuffer {
         }
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.head == self.tail
     }
@@ -48,6 +49,7 @@ impl StreamBuffer {
         self.buf.len() - 1
     }
 
+    #[inline]
     pub fn remaining(&self) -> usize {
         self.capacity() - self.size()
     }
@@ -74,7 +76,7 @@ impl StreamBuffer {
     }
 
     pub fn read_from(&mut self, source: &[u8]) {
-        assert!(
+        debug_assert!(
             source.len() <= self.remaining(),
             "StreamBuffer is full, check remaining() before calling read_from()"
         );
