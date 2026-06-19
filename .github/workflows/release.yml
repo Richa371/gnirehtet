@@ -67,17 +67,6 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target.rust-target }} --manifest-path relay-rust/Cargo.toml
 
-      - name: Download ADB
-        shell: bash
-        run: |
-          PLATFORM="linux"
-          [[ "${{ matrix.target.os }}" == macos-* ]] && PLATFORM="darwin"
-          [[ "${{ matrix.target.os }}" == windows-* ]] && PLATFORM="windows"
-          curl -fLo /tmp/adb.zip "https://dl.google.com/android/repository/platform-tools-latest-${PLATFORM}.zip"
-          mkdir -p /tmp/adb-extract
-          unzip -o -j /tmp/adb.zip "platform-tools/adb*" -d /tmp/adb-extract
-          chmod +x /tmp/adb-extract/adb 2>/dev/null || true
-
       - name: Package
         shell: bash
         run: |
@@ -85,7 +74,6 @@ jobs:
           mkdir -p "dist/$ARCHIVE_DIR"
           cp "relay-rust/target/${{ matrix.target.rust-target }}/release/${{ matrix.target.binary }}" "dist/$ARCHIVE_DIR/gnirehtet$([[ "${{ matrix.target.os }}" == windows-* ]] && echo '.exe' || true)"
           cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/$ARCHIVE_DIR/gnirehtet.apk"
-          cp /tmp/adb-extract/* "dist/$ARCHIVE_DIR/"
           cd dist
           if command -v 7z &>/dev/null; then
             7z a -tzip "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR" > /dev/null

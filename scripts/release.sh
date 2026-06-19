@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package a release for the current platform: gnirehtet binary + adb + gnirehtet.apk.
+# Package a release for the current platform: gnirehtet binary + gnirehtet.apk.
 # Usage: ./scripts/release.sh [version]
 set -e
 
@@ -37,13 +37,6 @@ cp "relay-rust/target/release/$BINARY" "$DIST/$DIR_NAME/gnirehtet$([[ $PLATFORM 
 [ -f app/build/outputs/apk/release/app-release-unsigned.apk ] && \
     cp app/build/outputs/apk/release/app-release-unsigned.apk "$DIST/$DIR_NAME/gnirehtet.apk"
 
-# Download and bundle ADB
-ADB_URL="https://dl.google.com/android/repository/platform-tools-latest-${PLATFORM}.zip"
-echo "Downloading ADB..."
-curl -fLo /tmp/adb.zip "$ADB_URL"
-unzip -o -j /tmp/adb.zip "platform-tools/adb*" -d "$DIST/$DIR_NAME" 2>/dev/null
-rm /tmp/adb.zip
-chmod +x "$DIST/$DIR_NAME/adb" 2>/dev/null || true
 
 # Package
 cd "$DIST"
