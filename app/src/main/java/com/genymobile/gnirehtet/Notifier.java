@@ -64,7 +64,13 @@ public class Notifier {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             createNotificationChannel();
         }
-        context.startForeground(NOTIFICATION_ID, createNotification(false));
+        try {
+            context.startForeground(NOTIFICATION_ID, createNotification(false));
+        } catch (Exception e) {
+            // Notification permission may be missing on Android 13+
+            // The VPN works fine without the persistent notification
+            android.util.Log.w("Notifier", "Could not show notification", e);
+        }
     }
 
     public void stop() {

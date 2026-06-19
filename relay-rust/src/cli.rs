@@ -312,7 +312,7 @@ fn interactive_prompt() {
             break;
         }
         match input.trim() {
-            "" | "3" => {
+            "1" => {
                 eprintln!("Exiting.");
                 std::process::exit(0);
             }
@@ -323,7 +323,7 @@ fn interactive_prompt() {
                 eprintln!();
                 continue;
             }
-            "3" => {
+            "" | "3" => {
                 // Auto-detect DNS and MTU, then run autorun
                 let dns = commands::detect_system_dns().join(",");
                 let mtu = commands::detect_mtu();
