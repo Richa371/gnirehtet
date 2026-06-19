@@ -7,3 +7,4 @@ relay-rust/target/
 *.apk
 *.zip
 dist/
+.reasonix/
