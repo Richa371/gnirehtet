@@ -16,5 +16,5 @@ if [ ! -f local.properties ]; then
 fi
 
 echo "Building APK..."
-./gradlew :app:assembleRelease
-echo "APK at app/build/outputs/apk/release/app-release-unsigned.apk"
+./gradlew :app:assembleDebug
+echo "APK at app/build/outputs/apk/debug/app-debug.apk"

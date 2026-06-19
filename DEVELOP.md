@@ -58,7 +58,7 @@ cargo build --release
 ### Android APK
 
 ```bash
-./gradlew :app:assembleRelease
+./gradlew :app:assembleDebug
 ```
 
 ### Everything

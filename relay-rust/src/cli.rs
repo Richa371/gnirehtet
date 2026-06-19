@@ -303,16 +303,16 @@ fn interactive_prompt() {
         eprintln!("Choose an action:");
         eprintln!("  [1] Exit");
         eprintln!("  [2] View all commands and options (--help)");
-        eprintln!("  [3] Run with recommended settings (not yet configured)");
+        eprintln!("  [3] Run with recommended settings");
         eprintln!();
-        eprint!("Enter choice [1]: ");
+        eprint!("Enter choice [3]: ");
 
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input).is_err() {
             break;
         }
         match input.trim() {
-            "" | "1" => {
+            "" | "3" => {
                 eprintln!("Exiting.");
                 std::process::exit(0);
             }

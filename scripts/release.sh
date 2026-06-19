@@ -34,8 +34,8 @@ fi
 # Bundle
 mkdir -p "$DIST/$DIR_NAME"
 cp "relay-rust/target/release/$BINARY" "$DIST/$DIR_NAME/gnirehtet$([[ $PLATFORM == "windows" ]] && echo ".exe" || true)"
-[ -f app/build/outputs/apk/release/app-release-unsigned.apk ] && \
-    cp app/build/outputs/apk/release/app-release-unsigned.apk "$DIST/$DIR_NAME/gnirehtet.apk"
+[ -f app/build/outputs/apk/debug/app-debug.apk ] && \
+    cp app/build/outputs/apk/debug/app-debug.apk "$DIST/$DIR_NAME/gnirehtet.apk"
 
 
 # Package

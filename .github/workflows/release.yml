@@ -56,7 +56,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build APK
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew :app:assembleDebug
 
       - name: Install cross-linker (Linux ARM64)
         if: matrix.target.rust-target == 'aarch64-unknown-linux-gnu'
@@ -73,7 +73,7 @@ jobs:
           ARCHIVE_DIR="gnirehtet-${{ matrix.target.archive-suffix }}"
           mkdir -p "dist/$ARCHIVE_DIR"
           cp "relay-rust/target/${{ matrix.target.rust-target }}/release/${{ matrix.target.binary }}" "dist/$ARCHIVE_DIR/gnirehtet$([[ "${{ matrix.target.os }}" == windows-* ]] && echo '.exe' || true)"
-          cp app/build/outputs/apk/release/app-release-unsigned.apk "dist/$ARCHIVE_DIR/gnirehtet.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/$ARCHIVE_DIR/gnirehtet.apk"
           cd dist
           if command -v 7z &>/dev/null; then
             7z a -tzip "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR" > /dev/null

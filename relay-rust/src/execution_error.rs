@@ -63,7 +63,7 @@ impl CommandExecutionError {
             }
             CommandExecutionError::ProcessStatus(err) => match err.termination {
                 Termination::Value(1) => {
-                    "Check `adb devices` shows your device and USB debugging is enabled"
+                    "Check that `gnirehtet.apk` is valid and the device screen is unlocked"
                 }
                 Termination::Value(_) => {
                     "Restart ADB: `adb kill-server && adb start-server`"

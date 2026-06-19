@@ -45,4 +45,4 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build APK
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew :app:assembleDebug

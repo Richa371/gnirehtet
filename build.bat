@@ -27,7 +27,7 @@ goto end
 
 :apk
 echo Building APK...
-call gradlew.bat :app:assembleRelease
+call gradlew.bat :app:assembleDebug
 goto end
 
 :clean
