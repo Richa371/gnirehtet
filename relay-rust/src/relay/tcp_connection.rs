@@ -269,7 +269,13 @@ impl TcpConnection {
 
     fn remove_from_router(&self) {
         let client_rc = self.client.upgrade().unwrap_or_else(|| panic!("Expected client not found"));
-        let mut client = client_rc.borrow_mut();
+        let mut client = match client_rc.try_borrow_mut() {
+            Ok(c) => c,
+            Err(_) => {
+                cx_debug!(target: TAG, self.id, "Client busy, skipping");
+                return;
+            }
+        };
         client.router().remove(&self.id);
     }
 
@@ -365,7 +371,13 @@ impl TcpConnection {
                         let Some(client_rc) = self.client.upgrade() else {
                             return Ok(());
                         };
-                        let mut client = client_rc.borrow_mut();
+                        let mut client = match client_rc.try_borrow_mut() {
+                            Ok(c) => c,
+                            Err(_) => {
+                                cx_debug!(target: TAG, self.id, "Client busy, skipping");
+                                return Ok(());
+                            }
+                        };
                         cx_debug!(
                             target: TAG,
                             self.id,
@@ -447,7 +459,10 @@ impl TcpConnection {
                                 return Ok(());
                             }
                         };
-                        let mut client = client_rc.borrow_mut();
+                        let mut client = match client_rc.try_borrow_mut() {
+                            Ok(c) => c,
+                            Err(_) => return Ok(()),
+                        };
                         let self_rc = self.self_weak.upgrade().unwrap();
                         client.register_pending_packet_source(self_rc);
                         self.packet_for_client_length = Some(ip_packet.length());
@@ -491,7 +506,9 @@ impl TcpConnection {
             Some(c) => c,
             None => return Err(io::Error::new(io::ErrorKind::NotConnected, "client dropped")),
         };
-        let mut client = client_rc.borrow_mut();
+        let mut client = client_rc.try_borrow_mut().map_err(|_| {
+            io::Error::new(io::ErrorKind::WouldBlock, "client busy")
+        })?;
         client.send_to_client(ip_packet)
     }
 
@@ -505,8 +522,14 @@ impl TcpConnection {
                 return;
             }
         };
-        let mut client = client_rc.borrow_mut();
-        self.reply_empty_packet_to_client(&mut client.channel(), flags);
+        if let Ok(mut client) = client_rc.try_borrow_mut() {
+            if !client.is_closed() {
+                self.reply_empty_packet_to_client(&mut client.channel(), flags);
+            }
+        } else {
+            // Client is busy (already borrowed by the router) — skip the empty packet
+            cx_debug!(target: TAG, self.id, "Client busy, skipping control packet");
+        }
     }
 
     fn reply_empty_packet_to_client(
@@ -528,7 +551,13 @@ impl TcpConnection {
                 return;
             }
         };
-        let mut client = client_rc.borrow_mut();
+        let mut client = match client_rc.try_borrow_mut() {
+            Ok(c) => c,
+            Err(_) => {
+                cx_debug!(target: TAG, self.id, "Client busy, skipping EOF");
+                return;
+            }
+        };
         cx_debug!(target: TAG, self.id, "EOF");
         self.tcb.acknowledgement_number += Wrapping(1); // FIN counts for 1 byte
         self.reply_empty_packet_to_client(&mut client.channel(), tcp_header::FLAG_FIN | tcp_header::FLAG_ACK);

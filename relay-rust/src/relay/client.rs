@@ -216,18 +216,14 @@ impl Client {
             return;
         }
 
-        // Read 4-byte client ID
-        let mut id_buf = [0u8; 4];
-        if read_exact(&mut stream, &mut id_buf).is_err() {
-            error!(target: TAG, "Failed to read client ID");
-            return;
-        }
-        // Echo client ID back
-        if write_all(&mut stream, &id_buf).is_err() {
+        // Assign client ID and send it to the device first (device expects relay to write first)
+        static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id_bytes = id.to_be_bytes();
+        if write_all(&mut stream, &id_bytes).is_err() {
             error!(target: TAG, "Failed to write client ID");
             return;
         }
-        let id = u32::from_be_bytes(id_buf);
         info!(target: TAG, "Client #{} connected", id);
 
         let close_tx = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -311,6 +307,7 @@ impl Client {
     }
 }
 
+#[allow(dead_code)]
 /// Helper: read exactly `buf.len()` bytes from a non-blocking stream.
 fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> io::Result<()> {
     let mut offset = 0;
